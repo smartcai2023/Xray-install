@@ -66,13 +66,7 @@ download_file() {
 
 # 生成随机端口和密码
 generate_random_port() {
-    while true; do
-        PORT=$((RANDOM % 65535 + 1000))
-        if ! ss -tuln | grep -q ":$PORT "; then
-            echo "$PORT"
-            return
-        fi
-    done
+    shuf -i 1000-65535 -n 1
 }
 
 generate_random_password() {
@@ -86,6 +80,15 @@ get_server_ips() {
     if [ -z "$IPV4" ] && [ -z "$IPV6" ]; then
         echo "无法获取服务器的 IPv4 和 IPv6 地址。"
         return 1
+    fi
+}
+
+# 获取当前安装的 Hysteria2 版本
+get_hysteria_version() {
+    if [ -f "$HYSTERIA_BINARY" ]; then
+        "$HYSTERIA_BINARY" version | grep -oP 'version \K\S+'
+    else
+        echo "未安装"
     fi
 }
 
@@ -188,6 +191,12 @@ status_hysteria() {
 # 更新Hysteria2
 update_hysteria() {
     echo "正在检查 Hysteria2 更新..."
+
+    # 确保安装了 jq
+    if ! command -v jq &> /dev/null; then
+        echo "未安装 jq，正在安装..."
+        install_dependencies
+    fi
 
     # 获取当前版本
     CURRENT_VERSION=$(get_hysteria_version)
