@@ -100,9 +100,25 @@ install_hysteria() {
     mkdir -p $HYSTERIA_DIR
     check_error "创建 Hysteria 目录" || return
 
-    # 生成随机端口和密码
-    PORT=$(generate_random_port)
-    PASSWORD=$(generate_random_password)
+    # 提示用户是否自定义端口和密码
+    read -p "是否自定义端口和密码？(y/n, 默认 n): " CUSTOM_CONFIG
+    if [[ "$CUSTOM_CONFIG" == "y" || "$CUSTOM_CONFIG" == "Y" ]]; then
+        read -p "请输入自定义端口 (默认随机生成): " CUSTOM_PORT
+        read -p "请输入自定义密码 (默认随机生成): " CUSTOM_PASSWORD
+    fi
+
+    # 设置端口和密码
+    if [[ -n "$CUSTOM_PORT" ]]; then
+        PORT="$CUSTOM_PORT"
+    else
+        PORT=$(generate_random_port)
+    fi
+
+    if [[ -n "$CUSTOM_PASSWORD" ]]; then
+        PASSWORD="$CUSTOM_PASSWORD"
+    else
+        PASSWORD=$(generate_random_password)
+    fi
 
     # 生成自签证书
     echo "正在生成自签证书..."
@@ -206,8 +222,17 @@ update_hysteria() {
         return
     fi
 
-    # 获取最新版本
-    LATEST_VERSION=$(curl -s https://api.github.com/repos/HyNetwork/hysteria/releases/latest | jq -r .tag_name)
+    # 获取最新版本（使用 GitHub API）
+    API_RESPONSE=$(curl -s https://api.github.com/repos/HyNetwork/hysteria/releases/latest)
+    echo "GitHub API 响应: $API_RESPONSE"
+    LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r .tag_name)
+
+    # 如果 GitHub API 失败，使用备用方法
+    if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "null" ]; then
+        echo "GitHub API 请求失败，尝试备用方法..."
+        LATEST_VERSION=$(curl -s https://github.com/HyNetwork/hysteria/releases/latest | grep -oP 'releases/tag/\Kv\d+\.\d+\.\d+')
+    fi
+
     if [ -z "$LATEST_VERSION" ]; then
         echo "无法获取最新版本信息。"
         read -p "按回车键返回主菜单..."
