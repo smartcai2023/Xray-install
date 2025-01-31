@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 定义变量
+# 定义常量
 HYSTERIA_DIR="/etc/hysteria"
 HYSTERIA_CONFIG="$HYSTERIA_DIR/config.yaml"
 HYSTERIA_SERVICE="/etc/systemd/system/hysteria.service"
@@ -8,146 +8,146 @@ HYSTERIA_BINARY="/usr/local/bin/hysteria"
 LOG_FILE="/var/log/hysteria_install.log"
 CLIENT_CONFIG="$HYSTERIA_DIR/client.json"
 
-# 权限检测
-if [ "$EUID" -ne 0 ]; then
-    echo "请以 root 用户运行此脚本。"
-    exit 1
-fi
+# 初始化日志
+init_log() {
+    exec > >(tee -a "$LOG_FILE") 2>&1
+    echo "------------------- Hysteria2 安装日志 -------------------"
+}
 
-# 日志功能
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-# 错误检查函数
+# 错误处理函数
 check_error() {
+    local error_msg=$1
+    local exit_code=$2
     if [ $? -ne 0 ]; then
-        echo "错误: $1 失败。请检查日志文件: $LOG_FILE"
-        read -p "按回车键返回主菜单..."
-        return 1
+        echo -e "\033[31m错误: $error_msg\033[0m"
+        if [ "$exit_code" = true ]; then
+            return 1
+        fi
     fi
 }
 
-# 检测系统类型并安装依赖
-install_dependencies() {
-    if command -v apt &> /dev/null; then
-        echo "检测到 Debian/Ubuntu 系统，使用 apt 安装依赖..."
-        apt update
-        apt install -y curl openssl qrencode jq
-    elif command -v yum &> /dev/null; then
-        echo "检测到 CentOS/Amazon Linux 2 系统，使用 yum 安装依赖..."
-        yum install -y curl openssl qrencode jq
-    else
-        echo "不支持的系统类型。"
-        exit 1
-    fi
-    check_error "安装依赖" || return
+# 系统检测和依赖安装
+detect_system() {
+    case $(lsb_release -si) in
+        "Ubuntu" | "Debian")
+            pkg_manager="apt"
+            install_cmd="apt update && apt install -y"
+            ;;
+        "CentOS" | "Amazon")
+            pkg_manager="yum"
+            install_cmd="yum install -y"
+            ;;
+        *)
+            echo "不支持的系统类型: $(lsb_release -si)"
+            exit 1
+            ;;
+    esac
+
+    echo "检测到 $(lsb_release -si) 系统，使用 $pkg_manager 安装依赖..."
+    eval "$install_cmd curl openssl qrencode jq"
+    check_error "安装依赖" true
 }
 
 # 下载文件（带重试机制）
 download_file() {
     local url=$1
     local output=$2
-    local retries=3
-    local delay=2
+    local retries=${3:-3}
+    local delay=${4:-2}
 
     for ((i=1; i<=retries; i++)); do
-        echo "正在下载文件 (尝试 $i/$retries): $url"
+        echo -e "\033[34m正在下载文件 (尝试 $i/$retries): $url\033[0m"
         if curl -fsSL -o "$output" "$url"; then
-            echo "下载成功: $output"
+            echo -e "\033[32m下载成功: $output\033[0m"
             return 0
         else
-            echo "下载失败，等待 $delay 秒后重试..."
+            echo -e "\033[33m下载失败，等待 $delay 秒后重试...\033[0m"
             sleep $delay
         fi
     done
-
-    echo "下载失败: $url"
+    echo -e "\033[31m下载失败: $url\033[0m"
     return 1
 }
 
-# 生成随机端口和密码
-generate_random_port() {
-    shuf -i 1000-65535 -n 1
+# 随机生成端口和密码
+generate_config() {
+    local port=$(shuf -i 1000-65535 -n 1)
+    local password=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+    echo "$port"
+    echo "$password"
 }
 
-generate_random_password() {
-    tr -dc A-Za-z0-9 </dev/urandom | head -c 16
-}
-
-# 获取服务器的 IPv4 和 IPv6 地址
+# 获取服务器IP地址
 get_server_ips() {
-    IPV4=$(curl -4 -s ifconfig.me)
-    IPV6=$(curl -6 -s ifconfig.me)
-    if [ -z "$IPV4" ] && [ -z "$IPV6" ]; then
-        echo "无法获取服务器的 IPv4 和 IPv6 地址。"
-        return 1
-    fi
+    local ipv4=$(curl -4 -s ifconfig.me)
+    local ipv6=$(curl -6 -s ifconfig.me)
+    echo "$ipv4"
+    echo "$ipv6"
 }
 
-# 获取当前安装的 Hysteria2 版本
-get_hysteria_version() {
-    if [ -f "$HYSTERIA_BINARY" ]; then
-        "$HYSTERIA_BINARY" version | grep -oP 'version \K\S+'
+# Hysteria2 版本比较
+version_compare() {
+    local current=$1
+    local latest=$2
+    if [ "$(printf '%s\n' "$current" "$latest" | sort -V | head -n1)" = "$current" ]; then
+        return 1
     else
-        echo "未安装"
+        return 0
     fi
 }
 
 # 安装Hysteria2
 install_hysteria() {
-    echo "正在安装Hysteria2..."
+    echo -e "\033[34m正在安装 Hysteria2...\033[0m"
 
-    # 创建Hysteria目录
-    mkdir -p $HYSTERIA_DIR
-    check_error "创建 Hysteria 目录" || return
+    # 创建目录
+    mkdir -p "$HYSTERIA_DIR" && chmod 755 "$HYSTERIA_DIR"
+    check_error "创建 Hysteria 目录" true || return
 
-    # 提示用户是否自定义端口和密码
+    # 用户自定义配置
     read -p "是否自定义端口和密码？(y/n, 默认 n): " CUSTOM_CONFIG
-    if [[ "$CUSTOM_CONFIG" == "y" || "$CUSTOM_CONFIG" == "Y" ]]; then
+    local port password
+    if [[ "$CUSTOM_CONFIG" =~ ^[yY] ]]; then
         read -p "请输入自定义端口 (默认随机生成): " CUSTOM_PORT
         read -p "请输入自定义密码 (默认随机生成): " CUSTOM_PASSWORD
-    fi
-
-    # 设置端口和密码
-    if [[ -n "$CUSTOM_PORT" ]]; then
-        PORT="$CUSTOM_PORT"
+        port=${CUSTOM_PORT:-$(generate_config | head -n1)}
+        password=${CUSTOM_PASSWORD:-$(generate_config | tail -n1)}
     else
-        PORT=$(generate_random_port)
-    fi
-
-    if [[ -n "$CUSTOM_PASSWORD" ]]; then
-        PASSWORD="$CUSTOM_PASSWORD"
-    else
-        PASSWORD=$(generate_random_password)
+        port=$(generate_config | head -n1)
+        password=$(generate_config | tail -n1)
     fi
 
     # 生成自签证书
-    echo "正在生成自签证书..."
-    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) -keyout $HYSTERIA_DIR/server.key -out $HYSTERIA_DIR/server.crt -subj "/CN=example.com" -days 3650
-    check_error "生成自签证书" || return
+    echo -e "\033[34m正在生成自签证书...\033[0m"
+    openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
+        -keyout "$HYSTERIA_DIR/server.key" -out "$HYSTERIA_DIR/server.crt" \
+        -subj "/CN=example.com" -days 3650 -batch
+    check_error "生成自签证书" true || return
 
     # 创建配置文件
-    echo "正在创建配置文件..."
-    cat > $HYSTERIA_CONFIG <<EOF
-listen: :$PORT
+    echo -e "\033[34m正在创建配置文件...\033[0m"
+    cat > "$HYSTERIA_CONFIG" <<EOF
+listen: :$port
 tls:
   cert: $HYSTERIA_DIR/server.crt
   key: $HYSTERIA_DIR/server.key
 auth:
   type: password
-  password: $PASSWORD
+  password: $password
 EOF
-    check_error "创建配置文件" || return
+    check_error "创建配置文件" true || return
 
-    # 下载并安装Hysteria二进制文件
-    echo "正在下载Hysteria二进制文件..."
-    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" "$HYSTERIA_BINARY"
-    check_error "下载 Hysteria 二进制文件" || return
-    chmod +x $HYSTERIA_BINARY
-    check_error "设置 Hysteria 二进制文件可执行权限" || return
+    # 下载并安装二进制文件
+    echo -e "\033[34m正在下载 Hysteria 二进制文件...\033[0m"
+    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" \
+        "$HYSTERIA_BINARY" 3 5
+    check_error "下载 Hysteria 二进制文件" true || return
+    chmod +x "$HYSTERIA_BINARY"
+    check_error "设置 Hysteria 二进制文件可执行权限" true || return
 
     # 创建systemd服务
-    echo "正在创建systemd服务..."
-    cat > $HYSTERIA_SERVICE <<EOF
+    echo -e "\033[34m正在创建 systemd 服务...\033[0m"
+    cat > "$HYSTERIA_SERVICE" <<EOF
 [Unit]
 Description=Hysteria VPN Service
 After=network.target
@@ -160,233 +160,210 @@ User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-    check_error "创建 systemd 服务文件" || return
+    check_error "创建 systemd 服务文件" true || return
 
-    # 重载systemd并启动服务
-    echo "正在启动Hysteria2服务..."
+    # 启动服务
     systemctl daemon-reload
-    check_error "重载 systemd 配置" || return
+    check_error "重载 systemd 配置" true || return
     systemctl enable hysteria
-    check_error "启用 Hysteria 服务" || return
+    check_error "启用 Hysteria 服务" true || return
     systemctl start hysteria
-    check_error "启动 Hysteria 服务" || return
+    check_error "启动 Hysteria 服务" true || return
 
-    echo "Hysteria2安装完成！"
-    echo "端口: $PORT"
-    echo "密码: $PASSWORD"
-    echo "配置文件: $HYSTERIA_CONFIG"
-    echo "日志文件: $LOG_FILE"
-    read -p "按回车键返回主菜单..."
+    echo -e "\033[32mHysteria2 安装完成！\033[0m"
+    echo -e "端口: \033[33m$port\033[0m"
+    echo -e "密码: \033[33m$password\033[0m"
+    echo -e "配置文件: \033[33m$HYSTERIA_CONFIG\033[0m"
+    echo -e "日志文件: \033[33m$LOG_FILE\033[0m"
 }
 
-# 停止Hysteria2
-stop_hysteria() {
-    echo "正在停止Hysteria2..."
+# 停止服务
+stop_service() {
+    echo -e "\033[34m正在停止 Hysteria2...\033[0m"
     systemctl stop hysteria
-    check_error "停止 Hysteria 服务" || return
-    echo "Hysteria2已停止。"
-    read -p "按回车键返回主菜单..."
+    check_error "停止 Hysteria 服务" true || return
+    echo -e "\033[32mHysteria2 已停止。\033[0m"
 }
 
-# 重启Hysteria2
-restart_hysteria() {
-    echo "正在重启Hysteria2..."
+# 重启服务
+restart_service() {
+    echo -e "\033[34m正在重启 Hysteria2...\033[0m"
     systemctl restart hysteria
-    check_error "重启 Hysteria 服务" || return
-    echo "Hysteria2已重启。"
-    read -p "按回车键返回主菜单..."
+    check_error "重启 Hysteria 服务" true || return
+    echo -e "\033[32mHysteria2 已重启。\033[0m"
 }
 
-# 状态 Hysteria2
-status_hysteria() {
+# 查看服务状态
+view_status() {
+    echo -e "\033[34m查看 Hysteria2 状态...\033[0m"
     systemctl status hysteria
-    check_error "查看 Hysteria 服务状态" || return
-    read -p "按回车键返回主菜单..."
+    check_error "查看 Hysteria 服务状态" true || return
 }
 
 # 更新Hysteria2
 update_hysteria() {
-    echo "正在检查 Hysteria2 更新..."
-
-    # 确保安装了 jq
-    if ! command -v jq &> /dev/null; then
-        echo "未安装 jq，正在安装..."
-        install_dependencies
-    fi
+    echo -e "\033[34m正在检查 Hysteria2 更新...\033[0m"
 
     # 获取当前版本
-    CURRENT_VERSION=$(get_hysteria_version)
-    if [ "$CURRENT_VERSION" == "未安装" ]; then
-        echo "Hysteria2 未安装，请先安装。"
-        read -p "按回车键返回主菜单..."
+    current_version=$(command -v "$HYSTERIA_BINARY" && "$HYSTERIA_BINARY" version | awk '{print $2}')
+    if [ -z "$current_version" ]; then
+        echo -e "\033[31mHysteria2 未安装，无法更新。\033[0m"
         return
     fi
 
-    # 获取最新版本（使用 GitHub API）
-    API_RESPONSE=$(curl -s https://api.github.com/repos/HyNetwork/hysteria/releases/latest)
-    echo "GitHub API 响应: $API_RESPONSE"
-    LATEST_VERSION=$(echo "$API_RESPONSE" | jq -r .tag_name)
-
-    # 如果 GitHub API 失败，使用备用方法
-    if [ -z "$LATEST_VERSION" ] || [ "$LATEST_VERSION" == "null" ]; then
-        echo "GitHub API 请求失败，尝试备用方法..."
-        LATEST_VERSION=$(curl -s https://github.com/HyNetwork/hysteria/releases/latest | grep -oP 'releases/tag/\Kv\d+\.\d+\.\d+')
+    # 获取最新版本
+    latest_version=$(curl -s "https://api.github.com/repos/HyNetwork/hysteria/releases/latest" | jq -r '.tag_name')
+    if [ -z "$latest_version" ]; then
+        latest_version=$(curl -s "https://github.com/HyNetwork/hysteria/releases/latest" | grep -oP 'releases/tag/\Kv\d+\.\d+\.\d+')
     fi
 
-    if [ -z "$LATEST_VERSION" ]; then
-        echo "无法获取最新版本信息。"
-        read -p "按回车键返回主菜单..."
+    if [ -z "$latest_version" ]; then
+        echo -e "\033[31m无法获取最新版本信息。\033[0m"
         return
     fi
 
     # 比较版本
-    if [ "$CURRENT_VERSION" == "$LATEST_VERSION" ]; then
-        echo "当前已是最新版本，无需更新。"
-    else
-        echo "发现新版本: $LATEST_VERSION，正在更新..."
-
-        # 停止服务
-        systemctl stop hysteria
-        check_error "停止 Hysteria 服务" || return
-
-        # 下载并更新二进制文件
-        echo "正在下载Hysteria二进制文件..."
-        download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" "$HYSTERIA_BINARY"
-        check_error "下载 Hysteria 二进制文件" || return
-        chmod +x $HYSTERIA_BINARY
-        check_error "设置 Hysteria 二进制文件可执行权限" || return
-
-        # 启动服务
-        systemctl start hysteria
-        check_error "启动 Hysteria 服务" || return
-
-        echo "Hysteria2 已更新到最新版本: $LATEST_VERSION"
+    if version_compare "$current_version" "$latest_version"; then
+        echo -e "\033[32m当前已是最新版本：$current_version\033[0m"
+        return
     fi
 
-    echo "当前 Hysteria2 版本: $(get_hysteria_version)"
-    read -p "按回车键返回主菜单..."
+    echo -e "\033[34m发现新版本：$latest_version，正在更新...\033[0m"
+    stop_service
+
+    # 下载并更新二进制文件
+    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" \
+        "$HYSTERIA_BINARY" 3 5
+    check_error "下载 Hysteria 二进制文件" true || return
+    chmod +x "$HYSTERIA_BINARY"
+    check_error "设置 Hysteria 二进制文件可执行权限" true || return
+
+    # 启动服务
+    systemctl start hysteria
+    check_error "启动 Hysteria 服务" true || return
+
+    echo -e "\033[32mHysteria2 已更新到最新版本：$latest_version\033[0m"
 }
 
 # 卸载Hysteria2
 uninstall_hysteria() {
-    echo "正在卸载Hysteria2..."
-    systemctl stop hysteria
+    echo -e "\033[34m正在卸载 Hysteria2...\033[0m"
+    stop_service
     systemctl disable hysteria
-    rm -f $HYSTERIA_SERVICE
-    rm -f $HYSTERIA_BINARY
-    rm -rf $HYSTERIA_DIR
+    rm -f "$HYSTERIA_SERVICE"
+    rm -f "$HYSTERIA_BINARY"
+    rm -rf "$HYSTERIA_DIR"
     systemctl daemon-reload
-    echo "Hysteria2已卸载。"
-    read -p "按回车键返回主菜单..."
+    echo -e "\033[32mHysteria2 已卸载。\033[0m"
 }
 
-# 日志 Hysteria2
+# 查看日志
 view_log() {
-    echo "正在查看日志文件: $LOG_FILE"
-    echo "----------------------------------------"
-    cat $LOG_FILE
-    echo "----------------------------------------"
-    read -p "按回车键返回主菜单..."
+    echo -e "\033[34m正在查看日志文件：$LOG_FILE\033[0m"
+    echo "------------------- Hysteria2 安装日志 -------------------"
+    cat "$LOG_FILE"
 }
 
-# 生成二维码
-generate_qr_code() {
-    if ! command -v qrencode &> /dev/null; then
-        echo "未安装 qrencode，正在安装..."
-        install_dependencies
-    fi
-
-    echo "正在生成二维码..."
-    qrencode -t ANSIUTF8 -o - <<< "$1"
-}
-
-# 客户端参数
-view_client_config() {
+# 生成客户端配置
+generate_client_config() {
     if [ ! -f "$HYSTERIA_CONFIG" ]; then
-        echo "未找到 Hysteria 配置文件，请先安装 Hysteria2。"
-        read -p "按回车键返回主菜单..."
+        echo -e "\033[31m未找到 Hysteria 配置文件，请先安装 Hysteria2。\033[0m"
         return
     fi
 
-    # 获取服务器的 IPv4 和 IPv6 地址
-    get_server_ips
-    if [ -z "$IPV4" ] && [ -z "$IPV6" ]; then
-        echo "无法获取服务器的 IP 地址。"
-        read -p "按回车键返回主菜单..."
+    local ipv4=$(curl -4 -s ifconfig.me)
+    local ipv6=$(curl -6 -s ifconfig.me)
+    local port=$(grep -oP 'listen:\s*:\K\d+' "$HYSTERIA_CONFIG")
+    local password=$(grep -oP 'password:\s*\K\S+' "$HYSTERIA_CONFIG")
+
+    if [ -z "$port" ] || [ -z "$password" ]; then
+        echo -e "\033[31m无法从配置文件中提取客户端设置。\033[0m"
         return
     fi
 
-    # 从配置文件中提取端口和密码
-    PORT=$(grep -oP 'listen:\s*:\K\d+' $HYSTERIA_CONFIG)
-    PASSWORD=$(grep -oP 'password:\s*\K\S+' $HYSTERIA_CONFIG)
-
-    if [ -z "$PORT" ] || [ -z "$PASSWORD" ]; then
-        echo "无法从配置文件中提取客户端设置。"
-        read -p "按回车键返回主菜单..."
-        return
+    # 生成配置URL
+    local urls=()
+    if [ -n "$ipv4" ]; then
+        urls+=("hysteria2://$password@$ipv4:$port/?insecure=1&sni=example.com#Hysteria2 (IPv4)")
+    fi
+    if [ -n "$ipv6" ]; then
+        urls+=("hysteria2://$password@[$ipv6]:$port/?insecure=1&sni=example.com#Hysteria2 (IPv6)")
     fi
 
-    # 生成 Shadowrocket 支持的配置 URL
-    if [ -n "$IPV4" ]; then
-        SHADOWROCKET_URL_IPV4="hysteria2://$PASSWORD@$IPV4:$PORT/?insecure=1&sni=example.com#Hysteria2 (IPv4)"
-        echo "----------------------------------------"
-        echo "Shadowrocket 配置 URL (IPv4):"
-        echo "$SHADOWROCKET_URL_IPV4"
-        echo "----------------------------------------"
-        echo "将以下内容复制到 Shadowrocket 客户端 (IPv4):"
-        echo "$SHADOWROCKET_URL_IPV4"
-        echo "----------------------------------------"
-        generate_qr_code "$SHADOWROCKET_URL_IPV4"
-    fi
-
-    if [ -n "$IPV6" ]; then
-        SHADOWROCKET_URL_IPV6="hysteria2://$PASSWORD@[$IPV6]:$PORT/?insecure=1&sni=example.com#Hysteria2 (IPv6)"
-        echo "----------------------------------------"
-        echo "Shadowrocket 配置 URL (IPv6):"
-        echo "$SHADOWROCKET_URL_IPV6"
-        echo "----------------------------------------"
-        echo "将以下内容复制到 Shadowrocket 客户端 (IPv6):"
-        echo "$SHADOWROCKET_URL_IPV6"
-        echo "----------------------------------------"
-        generate_qr_code "$SHADOWROCKET_URL_IPV6"
-    fi
-
-    read -p "按回车键返回主菜单..."
+    echo -e "\033[34m生成客户端配置...\033[0m"
+    for url in "${urls[@]}"; do
+        echo -e "\033[32m$url\033[0m"
+        qrencode -t ANSIUTF8 -o - <<< "$url"
+    done
 }
 
 # 显示菜单
 show_menu() {
-    echo "======================================"
-    echo " Hysteria2 管理脚本"
-    echo "======================================"
-    echo "1. 安装 Hysteria2"
-    echo "2. 停止 Hysteria2"
-    echo "3. 重启 Hysteria2"
-    echo "4. 状态 Hysteria2"
-    echo "5. 更新 Hysteria2"
-    echo "6. 卸载 Hysteria2"
-    echo "7. 日志 Hysteria2"
-    echo "8. 客户端参数"
-    echo "9. 退出脚本"
-    echo "======================================"
+    clear
+    echo -e "======================================"
+    echo -e " Hysteria2 管理脚本"
+    echo -e "======================================"
+    echo -e "1. 安装 Hysteria2"
+    echo -e "2. 停止 Hysteria2"
+    echo -e "3. 重启 Hysteria2"
+    echo -e "4. 查看状态"
+    echo -e "5. 更新 Hysteria2"
+    echo -e "6. 卸载 Hysteria2"
+    echo -e "7. 查看日志"
+    echo -e "8. 生成客户端配置"
+    echo -e "9. 退出脚本"
+    echo -e "======================================"
+    echo -e "请输入选项 (1-9): "
 }
 
-# 主循环
-while true; do
-    show_menu
-    read -p "请输入选项 (1-9): " OPTION
-    case $OPTION in
-        1) install_hysteria ;;
-        2) stop_hysteria ;;
-        3) restart_hysteria ;;
-        4) status_hysteria ;;
-        5) update_hysteria ;;
-        6) uninstall_hysteria ;;
-        7) view_log ;;
-        8) view_client_config ;;
-        9) break ;;
-        *) echo "无效选项，请重新输入。" ;;
-    esac
-done
+# 主函数
+main() {
+    init_log
+    detect_system
 
-echo "脚本已退出。"
+    while true; do
+        show_menu
+        read -p "" option
+        case $option in
+            1)
+                install_hysteria
+                ;;
+            2)
+                stop_service
+                ;;
+            3)
+                restart_service
+                ;;
+            4)
+                view_status
+                ;;
+            5)
+                update_hysteria
+                ;;
+            6)
+                uninstall_hysteria
+                ;;
+            7)
+                view_log
+                ;;
+            8)
+                generate_client_config
+                ;;
+            9)
+                echo -e "\033[34m脚本退出。\033[0m"
+                exit 0
+                ;;
+            *)
+                echo -e "\033[31m无效选项，请重新输入。\033[0m"
+                ;;
+        esac
+        read -p "按回车键继续..." </dev/tty
+    done
+}
+
+# 运行主函数
+if [ "$EUID" -eq 0 ]; then
+    main
+else
+    echo -e "\033[31m请以 root 用户运行此脚本。\033[0m"
+fi
