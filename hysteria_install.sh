@@ -134,6 +134,13 @@ tls:
 auth:
   type: password
   password: $password
+bandwidth:
+  up_mbps: 200       # 根据实际带宽调整
+  down_mbps: 1000    # 根据实际带宽调整
+recv_window_conn: 33554432   # 单个连接接收窗口大小 (32 MB)
+recv_window_client: 134217728 # 客户端总接收窗口大小 (128 MB)
+max_conn_client: 1024        # 单个客户端的最大连接数
+disable_mtu_discovery: false # 是否禁用 MTU 发现
 EOF
     check_error "创建配置文件" true || return
 
