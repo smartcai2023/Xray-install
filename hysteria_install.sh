@@ -306,7 +306,7 @@ show_menu() {
     echo -e "1. 安装 Hysteria2"
     echo -e "2. 停止 Hysteria2"
     echo -e "3. 重启 Hysteria2"
-    echo -e "4. 查看状态"
+    echo -e "4. 状态 Hysteria2"
     echo -e "5. 更新 Hysteria2"
     echo -e "6. 卸载 Hysteria2"
     echo -e "7. 查看日志"
