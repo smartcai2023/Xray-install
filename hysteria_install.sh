@@ -366,4 +366,4 @@ if [ "$EUID" -eq 0 ]; then
     main
 else
     echo -e "\033[31m请以 root 用户运行此脚本。\033[0m"
-fi
+fi 
