@@ -7,7 +7,6 @@ HYSTERIA_SERVICE="/etc/systemd/system/hysteria.service"
 HYSTERIA_BINARY="/usr/local/bin/hysteria"
 LOG_FILE="/var/log/hysteria_install.log"
 CLIENT_CONFIG="$HYSTERIA_DIR/client.json"
-BACKUP_DIR="/etc/hysteria/backup"
 
 # 初始化日志
 init_log() {
@@ -38,14 +37,6 @@ detect_system() {
             pkg_manager="yum"
             install_cmd="yum install -y"
             ;;
-        "Fedora")
-            pkg_manager="dnf"
-            install_cmd="dnf install -y"
-            ;;
-        "Arch" | "Manjaro")
-            pkg_manager="pacman"
-            install_cmd="pacman -S --noconfirm"
-            ;;
         *)
             echo "不支持的系统类型: $(lsb_release -si)"
             exit 1
@@ -53,29 +44,20 @@ detect_system() {
     esac
 
     echo "检测到 $(lsb_release -si) 系统，使用 $pkg_manager 安装依赖..."
-    eval "$install_cmd curl openssl qrencode jq unzip tar"
+    eval "$install_cmd curl openssl qrencode jq"
     check_error "安装依赖" true
 }
 
-# 下载文件（带重试机制和完整性校验）
+# 下载文件（带重试机制）
 download_file() {
     local url=$1
     local output=$2
     local retries=${3:-3}
     local delay=${4:-2}
-    local sha256=${5:-}
 
     for ((i=1; i<=retries; i++)); do
         echo -e "\033[34m正在下载文件 (尝试 $i/$retries): $url\033[0m"
-        if curl -fsSL --connect-timeout 30 -o "$output" "$url"; then
-            if [ -n "$sha256" ]; then
-                downloaded_sha256=$(sha256sum "$output" | cut -d' ' -f1)
-                if [ "$downloaded_sha256" != "$sha256" ]; then
-                    echo -e "\033[31m文件完整性校验失败，下载的文件可能已被篡改。\033[0m"
-                    rm -f "$output"
-                    continue
-                fi
-            fi
+        if curl -fsSL -o "$output" "$url"; then
             echo -e "\033[32m下载成功: $output\033[0m"
             return 0
         else
@@ -97,8 +79,8 @@ generate_config() {
 
 # 获取服务器IP地址
 get_server_ips() {
-    local ipv4=$(curl -4 -s --connect-timeout 10 ifconfig.me)
-    local ipv6=$(curl -6 -s --connect-timeout 10 ifconfig.me)
+    local ipv4=$(curl -4 -s ifconfig.me)
+    local ipv6=$(curl -6 -s ifconfig.me)
     echo "$ipv4"
     echo "$ipv6"
 }
@@ -157,10 +139,8 @@ EOF
 
     # 下载并安装二进制文件
     echo -e "\033[34m正在下载 Hysteria 二进制文件...\033[0m"
-    latest_version=$(curl -s "https://api.github.com/repos/HyNetwork/hysteria/releases/latest" | jq -r '.tag_name')
-    download_url="https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64"
-    sha256=$(curl -s "https://github.com/HyNetwork/hysteria/releases/latest" | grep -oP 'SHA256: \K[0-9a-f]+' | head -n1)
-    download_file "$download_url" "$HYSTERIA_BINARY" 3 5 "$sha256"
+    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" \
+        "$HYSTERIA_BINARY" 3 5
     check_error "下载 Hysteria 二进制文件" true || return
     chmod +x "$HYSTERIA_BINARY"
     check_error "设置 Hysteria 二进制文件可执行权限" true || return
@@ -251,14 +231,9 @@ update_hysteria() {
     echo -e "\033[34m发现新版本：$latest_version，正在更新...\033[0m"
     stop_service
 
-    # 备份现有版本
-    backup_file "$HYSTERIA_BINARY" "$BACKUP_DIR"
-    backup_file "$HYSTERIA_CONFIG" "$BACKUP_DIR"
-
     # 下载并更新二进制文件
-    download_url="https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64"
-    sha256=$(curl -s "https://github.com/HyNetwork/hysteria/releases/latest" | grep -oP 'SHA256: \K[0-9a-f]+')
-    download_file "$download_url" "$HYSTERIA_BINARY" 3 5 "$sha256"
+    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" \
+        "$HYSTERIA_BINARY" 3 5
     check_error "下载 Hysteria 二进制文件" true || return
     chmod +x "$HYSTERIA_BINARY"
     check_error "设置 Hysteria 二进制文件可执行权限" true || return
@@ -289,15 +264,6 @@ view_log() {
     cat "$LOG_FILE"
 }
 
-# 备份文件
-backup_file() {
-    local src=$1
-    local dest=$2
-    mkdir -p "$dest"
-    cp -fp "$src" "$dest/$(basename "$src")"
-    echo -e "\033[32m已备份文件：$src\033[0m"
-}
-
 # 生成客户端配置
 generate_client_config() {
     if [ ! -f "$HYSTERIA_CONFIG" ]; then
@@ -305,8 +271,8 @@ generate_client_config() {
         return
     fi
 
-    local ipv4=$(curl -4 -s --connect-timeout 10 ifconfig.me)
-    local ipv6=$(curl -6 -s --connect-timeout 10 ifconfig.me)
+    local ipv4=$(curl -4 -s ifconfig.me)
+    local ipv6=$(curl -6 -s ifconfig.me)
     local port=$(grep -oP 'listen:\s*:\K\d+' "$HYSTERIA_CONFIG")
     local password=$(grep -oP 'password:\s*\K\S+' "$HYSTERIA_CONFIG")
 
@@ -394,41 +360,6 @@ main() {
         read -p "按回车键继续..." </dev/tty
     done
 }
-
-# 帮助信息
-show_help() {
-    echo -e "使用帮助:"
-    echo -e "  -h, --help   显示此帮助信息并退出"
-    echo -e "  -v, --version 显示脚本版本并退出"
-    echo -e ""
-    echo -e "示例:"
-    echo -e "  sudo ./hysteria.sh -h"
-    echo -e "  sudo ./hysteria.sh --help"
-}
-
-# 版本信息
-show_version() {
-    echo -e "Hysteria2 安装脚本 v1.0.0"
-}
-
-# 参数解析
-while [ $# -gt 0 ]; do
-    case $1 in
-        -h | --help)
-            show_help
-            exit 0
-            ;;
-        -v | --version)
-            show_version
-            exit 0
-            ;;
-        *)
-            show_help
-            exit 1
-            ;;
-    esac
-    shift
-done
 
 # 运行主函数
 if [ "$EUID" -eq 0 ]; then
