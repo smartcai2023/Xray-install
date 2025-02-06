@@ -8,12 +8,6 @@ HYSTERIA_BINARY="/usr/local/bin/hysteria"
 LOG_FILE="/var/log/hysteria_install.log"
 CLIENT_CONFIG="$HYSTERIA_DIR/client.json"
 
-# 颜色定义
-GREEN="\033[32m"
-BLUE="\033[34m"
-RED="\033[31m"
-RESET="\033[0m"
-
 # 初始化日志
 init_log() {
     exec > >(tee -a "$LOG_FILE") 2>&1
@@ -50,8 +44,8 @@ detect_system() {
     esac
 
     echo "检测到 $(lsb_release -si) 系统，使用 $pkg_manager 安装依赖..."
-    eval "$install_cmd curl openssl qrencode jq"
-    check_error "安装依赖" true
+    eval "$install_cmd curl openssl qrencode jq net-tools sysctl"
+    check_error "安装依赖" true || exit 1
 }
 
 # 下载文件（带重试机制）
@@ -102,42 +96,7 @@ version_compare() {
     fi
 }
 
-# 自动检测最佳 MTU
-detect_mtu() {
-    local target="8.8.8.8"  # Google DNS 服务器，可修改为自己的目标
-    local mtu=1500
-    while [[ $mtu -gt 1200 ]]; do
-        if ping -M do -s $((mtu - 28)) -c 1 "$target" >/dev/null 2>&1; then
-            echo -e "${GREEN}最佳 MTU 值检测成功: $mtu${RESET}"
-            echo $mtu
-            return
-        fi
-        mtu=$((mtu - 10))
-    done
-    echo -e "${RED}无法检测到最佳 MTU，默认使用 1400${RESET}"
-    echo 1400
-}
-
-# 优化 UDP 缓冲区
-optimize_udp_buffer() {
-    echo -e "${BLUE}正在优化 UDP 缓冲区...${RESET}"
-    sysctl -w net.core.rmem_max=26214400
-    sysctl -w net.core.wmem_max=26214400
-    sysctl -p >/dev/null 2>&1
-    echo -e "${GREEN}UDP 缓冲区优化完成！${RESET}"
-}
-
-# 启用 BBR 拥塞控制
-enable_bbr() {
-    echo -e "${BLUE}正在启用 BBR 拥塞控制...${RESET}"
-    modprobe tcp_bbr 2>/dev/null
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1
-    echo -e "${GREEN}BBR 启用成功！${RESET}"
-}
-
-# Hysteria2 安装
+# 安装Hysteria2
 install_hysteria() {
     echo -e "\033[34m正在安装 Hysteria2...\033[0m"
 
@@ -158,6 +117,24 @@ install_hysteria() {
         password=$(generate_config | tail -n1)
     fi
 
+    # 优化系统参数
+    echo -e "\033[34m正在优化系统参数...\033[0m"
+    cat > /etc/sysctl.conf <<EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_max_syn_backlog=4096
+net.ipv4.tcp_max_tw_buckets=5000
+net.ipv4.tcp_tw_reuse=1
+net.ipv4.tcp_tw_recycle=0
+net.ipv4.tcp_fin_timeout=30
+net.ipv4.tcp_keepalive_time=30
+net.ipv4.tcp_keepalive_intvl=10
+net.ipv4.tcp_keepalive_probes=3
+EOF
+    sysctl -p
+    check_error "优化系统参数" true || return
+
     # 生成自签证书
     echo -e "\033[34m正在生成自签证书...\033[0m"
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
@@ -165,8 +142,8 @@ install_hysteria() {
         -subj "/CN=example.com" -days 3650 -batch
     check_error "生成自签证书" true || return
 
-    # 创建配置文件
-    echo -e "\033[34m正在创建配置文件...\033[0m"
+    # 创建优化后的配置文件
+    echo -e "\033[34m正在创建优化配置文件...\033[0m"
     cat > "$HYSTERIA_CONFIG" <<EOF
 listen: :$port
 tls:
@@ -175,6 +152,11 @@ tls:
 auth:
   type: password
   password: $password
+udp: true
+multiplex: true
+conn:
+  send_window: 1024
+  recv_window: 1024
 EOF
     check_error "创建配置文件" true || return
 
@@ -197,6 +179,8 @@ After=network.target
 ExecStart=$HYSTERIA_BINARY server --config $HYSTERIA_CONFIG
 Restart=always
 User=root
+CPUWeight=100
+IOWeight=100
 
 [Install]
 WantedBy=multi-user.target
@@ -218,23 +202,199 @@ EOF
     echo -e "日志文件: \033[33m$LOG_FILE\033[0m"
 }
 
+# 停止服务
+stop_service() {
+    echo -e "\033[34m正在停止 Hysteria2...\033[0m"
+    systemctl stop hysteria
+    check_error "停止 Hysteria 服务" true || return
+    echo -e "\033[32mHysteria2 已停止。\033[0m"
+}
+
+# 重启服务
+restart_service() {
+    echo -e "\033[34m正在重启 Hysteria2...\033[0m"
+    systemctl restart hysteria
+    check_error "重启 Hysteria 服务" true || return
+    echo -e "\033[32mHysteria2 已重启。\033[0m"
+}
+
+# 查看服务状态
+view_status() {
+    echo -e "\033[34m查看 Hysteria2 状态...\033[0m"
+    systemctl status hysteria
+    check_error "查看 Hysteria 服务状态" true || return
+}
+
+# 更新Hysteria2
+update_hysteria() {
+    echo -e "\033[34m正在检查 Hysteria2 更新...\033[0m"
+
+    # 获取当前版本
+    current_version=$(command -v "$HYSTERIA_BINARY" && "$HYSTERIA_BINARY" version | awk '{print $2}')
+    if [ -z "$current_version" ]; then
+        echo -e "\033[31mHysteria2 未安装，无法更新。\033[0m"
+        return
+    fi
+
+    # 获取最新版本
+    latest_version=$(curl -s "https://api.github.com/repos/HyNetwork/hysteria/releases/latest" | jq -r '.tag_name')
+    if [ -z "$latest_version" ]; then
+        latest_version=$(curl -s "https://github.com/HyNetwork/hysteria/releases/latest" | grep -oP 'releases/tag/\Kv\d+\.\d+\.\d+')
+    fi
+
+    if [ -z "$latest_version" ]; then
+        echo -e "\033[31m无法获取最新版本信息。\033[0m"
+        return
+    fi
+
+    # 比较版本
+    if version_compare "$current_version" "$latest_version"; then
+        echo -e "\033[32m当前已是最新版本：$current_version\033[0m"
+        return
+    fi
+
+    echo -e "\033[34m发现新版本：$latest_version，正在更新...\033[0m"
+    stop_service
+
+    # 下载并更新二进制文件
+    download_file "https://github.com/HyNetwork/hysteria/releases/latest/download/hysteria-linux-amd64" \
+        "$HYSTERIA_BINARY" 3 5
+    check_error "下载 Hysteria 二进制文件" true || return
+    chmod +x "$HYSTERIA_BINARY"
+    check_error "设置 Hysteria 二进制文件可执行权限" true || return
+
+    # 启动服务
+    systemctl start hysteria
+    check_error "启动 Hysteria 服务" true || return
+
+    echo -e "\033[32mHysteria2 已更新到最新版本：$latest_version\033[0m"
+}
+
+# 卸载Hysteria2
+uninstall_hysteria() {
+    echo -e "\033[34m正在卸载 Hysteria2...\033[0m"
+    stop_service
+    systemctl disable hysteria
+    rm -f "$HYSTERIA_SERVICE"
+    rm -f "$HYSTERIA_BINARY"
+    rm -rf "$HYSTERIA_DIR"
+    systemctl daemon-reload
+    echo -e "\033[32mHysteria2 已卸载。\033[0m"
+}
+
+# 查看日志
+view_log() {
+    echo -e "\033[34m正在查看日志文件：$LOG_FILE\033[0m"
+    echo "------------------- Hysteria2 安装日志 -------------------"
+    cat "$LOG_FILE"
+}
+
+# 生成客户端配置
+generate_client_config() {
+    if [ ! -f "$HYSTERIA_CONFIG" ]; then
+        echo -e "\033[31m未找到 Hysteria 配置文件，请先安装 Hysteria2。\033[0m"
+        return
+    fi
+
+    local ipv4=$(curl -4 -s ifconfig.me)
+    local ipv6=$(curl -6 -s ifconfig.me)
+    local port=$(grep -oP 'listen:\s*:\K\d+' "$HYSTERIA_CONFIG")
+    local password=$(grep -oP 'password:\s*\K\S+' "$HYSTERIA_CONFIG")
+
+    if [ -z "$port" ] || [ -z "$password" ]; then
+        echo -e "\033[31m无法从配置文件中提取客户端设置。\033[0m"
+        return
+    fi
+
+    # 生成配置URL
+    local urls=()
+    if [ -n "$ipv4" ]; then
+        urls+=("hysteria2://$password@$ipv4:$port/?insecure=1&sni=example.com#Hysteria2 (IPv4)")
+    fi
+    if [ -n "$ipv6" ]; then
+        urls+=("hysteria2://$password@[$ipv6]:$port/?insecure=1&sni=example.com#Hysteria2 (IPv6)")
+    fi
+
+    echo -e "\033[34m生成客户端配置...\033[0m"
+    for url in "${urls[@]}"; do
+        echo -e "\033[32m$url\033[0m"
+        qrencode -t ANSIUTF8 -o - <<< "$url"
+    done
+}
+
+# 显示菜单
+show_menu() {
+    clear
+    echo -e "======================================"
+    echo -e " Hysteria2 管理脚本"
+    echo -e "======================================"
+    echo -e "1. 安装 Hysteria2"
+    echo -e "2. 停止 Hysteria2"
+    echo -e "3. 重启 Hysteria2"
+    echo -e "4. 状态 Hysteria2"
+    echo -e "5. 更新 Hysteria2"
+    echo -e "6. 卸载 Hysteria2"
+    echo -e "7. 查看日志"
+    echo -e "8. 生成客户端配置"
+    echo -e "9. 退出脚本"
+    echo -e "======================================"
+    echo -e "请输入选项 (1-9): "
+}
+
+# 查看系统状态
+view_system_status() {
+    echo -e "\033[34m查看系统状态...\033[0m"
+    echo "------------------- 系统状态 -------------------"
+    echo -e "\033[32mCPU 使用率:\033[0m $(top -bn1 | grep 'Cpu(s)' | awk '{print 100 - $8}%')"
+    echo -e "\033[32m内存 使用率:\033[0m $(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2}')"
+    echo -e "\033[32m磁盘 使用率:\033[0m $(df -h / | awk 'NR==2 {print $5}')"
+    echo -e "\033[32m网络 状态:\033[0m"
+    netstat -antu | awk '{print $1 " " $2 " " $3 " " $4}'
+}
+
 # 主函数
 main() {
     init_log
     detect_system
 
-    # 优化网络设置
-    mtu_value=$(detect_mtu)
-    optimize_udp_buffer
-    enable_bbr
-
-    # 更新配置文件中的 MTU 值
-    echo -e "\033[34m请在 Hysteria2 配置文件中修改以下 MTU 设置:\033[0m"
-    echo -e "\033[32mudp:\n  mtu: $mtu_value\033[0m"
-    read -p "按回车键继续..."
-
-    # 选择操作
-    install_hysteria
+    while true; do
+        show_menu
+        read -p "" option
+        case $option in
+            1)
+                install_hysteria
+                ;;
+            2)
+                stop_service
+                ;;
+            3)
+                restart_service
+                ;;
+            4)
+                view_status
+                ;;
+            5)
+                update_hysteria
+                ;;
+            6)
+                uninstall_hysteria
+                ;;
+            7)
+                view_log
+                ;;
+            8)
+                generate_client_config
+                ;;
+            9)
+                echo -e "\033[34m脚本退出。\033[0m"
+                exit 0
+                ;;
+            *)
+                echo -e "\033[31m无效选项，请重新输入。\033[0m"
+                ;;
+        esac
+        read -p "按回车键继续..." </dev/tty
+    done
 }
 
 # 运行主函数
