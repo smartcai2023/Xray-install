@@ -44,8 +44,8 @@ detect_system() {
     esac
 
     echo "检测到 $(lsb_release -si) 系统，使用 $pkg_manager 安装依赖..."
-    eval "$install_cmd curl openssl qrencode jq net-tools sysctl"
-    check_error "安装依赖" true || exit 1
+    eval "$install_cmd curl openssl qrencode jq"
+    check_error "安装依赖" true
 }
 
 # 下载文件（带重试机制）
@@ -117,24 +117,6 @@ install_hysteria() {
         password=$(generate_config | tail -n1)
     fi
 
-    # 优化系统参数
-    echo -e "\033[34m正在优化系统参数...\033[0m"
-    cat > /etc/sysctl.conf <<EOF
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-net.ipv4.tcp_fastopen=3
-net.ipv4.tcp_max_syn_backlog=4096
-net.ipv4.tcp_max_tw_buckets=5000
-net.ipv4.tcp_tw_reuse=1
-net.ipv4.tcp_tw_recycle=0
-net.ipv4.tcp_fin_timeout=30
-net.ipv4.tcp_keepalive_time=30
-net.ipv4.tcp_keepalive_intvl=10
-net.ipv4.tcp_keepalive_probes=3
-EOF
-    sysctl -p
-    check_error "优化系统参数" true || return
-
     # 生成自签证书
     echo -e "\033[34m正在生成自签证书...\033[0m"
     openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
@@ -142,8 +124,8 @@ EOF
         -subj "/CN=example.com" -days 3650 -batch
     check_error "生成自签证书" true || return
 
-    # 创建优化后的配置文件
-    echo -e "\033[34m正在创建优化配置文件...\033[0m"
+    # 创建配置文件
+    echo -e "\033[34m正在创建配置文件...\033[0m"
     cat > "$HYSTERIA_CONFIG" <<EOF
 listen: :$port
 tls:
@@ -152,11 +134,6 @@ tls:
 auth:
   type: password
   password: $password
-udp: true
-multiplex: true
-conn:
-  send_window: 1024
-  recv_window: 1024
 EOF
     check_error "创建配置文件" true || return
 
@@ -179,8 +156,6 @@ After=network.target
 ExecStart=$HYSTERIA_BINARY server --config $HYSTERIA_CONFIG
 Restart=always
 User=root
-CPUWeight=100
-IOWeight=100
 
 [Install]
 WantedBy=multi-user.target
@@ -341,17 +316,6 @@ show_menu() {
     echo -e "请输入选项 (1-9): "
 }
 
-# 查看系统状态
-view_system_status() {
-    echo -e "\033[34m查看系统状态...\033[0m"
-    echo "------------------- 系统状态 -------------------"
-    echo -e "\033[32mCPU 使用率:\033[0m $(top -bn1 | grep 'Cpu(s)' | awk '{print 100 - $8}%')"
-    echo -e "\033[32m内存 使用率:\033[0m $(free -m | awk 'NR==2{printf "%.2f%%", $3*100/$2}')"
-    echo -e "\033[32m磁盘 使用率:\033[0m $(df -h / | awk 'NR==2 {print $5}')"
-    echo -e "\033[32m网络 状态:\033[0m"
-    netstat -antu | awk '{print $1 " " $2 " " $3 " " $4}'
-}
-
 # 主函数
 main() {
     init_log
@@ -402,4 +366,4 @@ if [ "$EUID" -eq 0 ]; then
     main
 else
     echo -e "\033[31m请以 root 用户运行此脚本。\033[0m"
-fi
+fi 
