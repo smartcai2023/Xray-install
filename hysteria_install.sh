@@ -28,8 +28,7 @@ install_self() {
     if [ "$SCRIPT_REAL_PATH" != "$SELF_INSTALL_PATH" ]; then
         install -m 755 "$SCRIPT_REAL_PATH" "$SELF_INSTALL_PATH"
         echo -e "${GREEN}已安装 hy 命令到 /usr/local/bin/hy${NC}"
-        echo -e "${YELLOW}请使用 hy 重新运行脚本${NC}"
-        exit 0
+        echo -e "${GREEN}继续执行...${NC}"
     fi
 }
 
