@@ -1,10 +1,16 @@
 #!/bin/bash
 
+# ====================================================
+# Hysteria2 Professional Script v2.2
+# Fixed HY Command Installation
+# ====================================================
+
 HYSTERIA_DIR="/etc/hysteria"
 HYSTERIA_CONFIG="$HYSTERIA_DIR/config.yaml"
 HYSTERIA_SERVICE="/etc/systemd/system/hysteria.service"
 HYSTERIA_BINARY="/usr/local/bin/hysteria"
 SYSCTL_CONF="/etc/sysctl.d/99-hysteria.conf"
+SELF_INSTALL_PATH="/usr/local/bin/hy"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -14,6 +20,20 @@ NC='\033[0m'
 
 LANGUAGE="zh"
 
+# ================= 自安装 hy 命令 =================
+install_self() {
+    SCRIPT_REAL_PATH="$(realpath "$0")"
+
+    # 如果当前不是从 /usr/local/bin/hy 运行，则安装自身
+    if [ "$SCRIPT_REAL_PATH" != "$SELF_INSTALL_PATH" ]; then
+        install -m 755 "$SCRIPT_REAL_PATH" "$SELF_INSTALL_PATH"
+        echo -e "${GREEN}已安装 hy 命令到 /usr/local/bin/hy${NC}"
+        echo -e "${YELLOW}请使用 hy 重新运行脚本${NC}"
+        exit 0
+    fi
+}
+
+# ================= 语言选择 =================
 select_language() {
     clear
     echo "请选择语言 / Please select language:"
@@ -30,7 +50,7 @@ load_language() {
     declare -gA msg
 
     if [ "$LANGUAGE" == "zh" ]; then
-        msg[welcome]="Hysteria2 专业管理脚本 v2.1"
+        msg[welcome]="Hysteria2 专业管理脚本 v2.2"
         msg[install]="安装 / 更新"
         msg[restart]="重启服务"
         msg[stop]="停止服务"
@@ -45,7 +65,7 @@ load_language() {
         msg[done]="操作完成"
         msg[root]="请用 root 运行"
     else
-        msg[welcome]="Hysteria2 Professional Script v2.1"
+        msg[welcome]="Hysteria2 Professional Script v2.2"
         msg[install]="Install / Update"
         msg[restart]="Restart Service"
         msg[stop]="Stop Service"
@@ -62,9 +82,14 @@ load_language() {
     fi
 }
 
+# ================= 初始化 =================
 init_sys() {
     [[ $EUID -ne 0 ]] && echo -e "${RED}${msg[root]}${NC}" && exit 1
-    command -v systemctl >/dev/null 2>&1 || { echo "Systemd required"; exit 1; }
+
+    command -v systemctl >/dev/null 2>&1 || {
+        echo "Systemd required"
+        exit 1
+    }
 
     case "$(uname -m)" in
         x86_64) ARCH="amd64" ;;
@@ -75,12 +100,12 @@ init_sys() {
     if [ -f /etc/debian_version ]; then
         apt update -y
         apt install -y curl openssl qrencode jq ca-certificates
-        ln -sf "$0" /usr/bin/hy
     elif [ -f /etc/redhat-release ]; then
         yum install -y curl openssl qrencode jq ca-certificates
     fi
 }
 
+# ================= 网络优化 =================
 optimize_network() {
 cat > "$SYSCTL_CONF" <<EOF
 net.core.default_qdisc=fq
@@ -94,6 +119,7 @@ EOF
 sysctl --system >/dev/null 2>&1
 }
 
+# ================= 防火墙 =================
 open_firewall() {
     if command -v ufw >/dev/null 2>&1; then
         ufw allow $1/udp
@@ -112,6 +138,7 @@ remove_firewall() {
     fi
 }
 
+# ================= 安装 =================
 install_hy2() {
 
     mkdir -p "$HYSTERIA_DIR"
@@ -119,7 +146,10 @@ install_hy2() {
     read -p "${msg[input_port]}" port
     port=${port:-$(shuf -i 10000-60000 -n 1)}
 
-    ss -lun | grep -q ":$port " && { echo "端口已占用"; return; }
+    ss -lun | grep -q ":$port " && {
+        echo "端口已占用"
+        return
+    }
 
     read -p "${msg[input_pass]}" password
     password=${password:-$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)}
@@ -172,6 +202,7 @@ EOF
     echo -e "${GREEN}${msg[done]}${NC}"
 }
 
+# ================= 显示配置 =================
 show_config() {
     port=$(grep -oP 'listen: :\K\d+' "$HYSTERIA_CONFIG")
     password=$(grep -oP 'password: \K\S+' "$HYSTERIA_CONFIG")
@@ -183,6 +214,7 @@ show_config() {
     qrencode -t ANSIUTF8 "$URL"
 }
 
+# ================= 卸载 =================
 uninstall_hy2() {
 
     port=$(grep -oP 'listen: :\K\d+' "$HYSTERIA_CONFIG" 2>/dev/null)
@@ -196,12 +228,15 @@ uninstall_hy2() {
     rm -f "$HYSTERIA_BINARY"
     rm -f "$HYSTERIA_SERVICE"
     rm -f "$SYSCTL_CONF"
-    rm -f /usr/bin/hy
+    rm -f "$SELF_INSTALL_PATH"
 
     systemctl daemon-reload
+
     echo "已完全卸载"
+    exit 0
 }
 
+# ================= 菜单 =================
 main_menu() {
 while true; do
 clear
@@ -231,6 +266,8 @@ read -p "回车继续..."
 done
 }
 
+# ================= 启动流程 =================
+install_self
 select_language
 load_language
 init_sys
