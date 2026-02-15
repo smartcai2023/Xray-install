@@ -403,4 +403,3 @@ if [ "$EUID" -eq 0 ]; then
 else
     echo -e "\033[31m请以 root 用户运行此脚本。\033[0m"
 fi
-帮我优化一下
