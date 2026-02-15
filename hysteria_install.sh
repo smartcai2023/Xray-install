@@ -18,10 +18,12 @@ BLUE='\033[34m'
 NC='\033[0m' # No Color
 
 # ========================== 工具函数 ==========================
-# 初始化日志系统
+# 初始化日志系统（修改：仅重定向普通输出，保留stderr和终端直接输出）
 init_log() {
     mkdir -p "$(dirname "$LOG_FILE")"
-    exec > >(tee -a "$LOG_FILE") 2>&1
+    # 仅将标准输出重定向到日志+终端，避免影响二维码等直接终端输出
+    exec > >(tee -a "$LOG_FILE")
+    # 错误输出仍保留到终端（不写入日志，避免二维码乱码）
     echo -e "[$(date '+%Y-%m-%d %H:%M:%S')] ------------------- Hysteria2 安装日志 -------------------"
 }
 
@@ -52,6 +54,23 @@ warn_msg() {
 check_command() {
     if ! command -v "$1" &> /dev/null; then
         error_exit "命令 $1 未找到，请先安装"
+    fi
+}
+
+# 生成二维码（独立函数，确保终端直接输出）
+generate_qr_code() {
+    local content="$1"
+    # 强制将二维码输出到终端（/dev/tty），避免日志重定向影响
+    if qrencode -t ANSIUTF8 -o /dev/tty <<< "$content"; then
+        return 0
+    else
+        # 兼容模式：若ANSIUTF8失败，改用ASCII模式
+        warn_msg "ANSIUTF8格式二维码生成失败，尝试ASCII格式"
+        if qrencode -t ASCII -o /dev/tty <<< "$content"; then
+            return 0
+        else
+            error_exit "二维码生成失败，请检查qrencode是否安装正确"
+        fi
     fi
 }
 
@@ -91,7 +110,7 @@ detect_system() {
     info_msg "检测到 $os_name 系统，使用 $pkg_manager 安装依赖..."
     eval "$install_cmd curl openssl qrencode jq net-tools" || error_exit "安装依赖失败"
     
-    # 检查必要命令
+    # 检查必要命令（重点检查qrencode）
     check_command "curl"
     check_command "openssl"
     check_command "jq"
@@ -466,7 +485,7 @@ view_log() {
     fi
 }
 
-# 生成客户端配置
+# 生成客户端配置（核心修复：二维码输出逻辑）
 generate_client_config() {
     if [ ! -f "$HYSTERIA_CONFIG" ]; then
         error_exit "未找到 Hysteria 配置文件，请先安装 Hysteria2"
@@ -494,11 +513,12 @@ generate_client_config() {
         urls+=("hysteria2://$password@[$ipv6]:$port/?insecure=1&sni=hysteria2-server#Hysteria2 (IPv6)")
     fi
 
-    # 显示配置URL和二维码
+    # 显示配置URL和二维码（核心修复）
     for url in "${urls[@]}"; do
         echo -e "${GREEN}$url${NC}"
         echo -e "${YELLOW}二维码：${NC}"
-        qrencode -t ANSIUTF8 -o - <<< "$url"
+        # 调用独立的二维码生成函数，强制输出到终端
+        generate_qr_code "$url"
         echo ""
     done
 
